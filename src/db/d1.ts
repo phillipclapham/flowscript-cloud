@@ -27,8 +27,7 @@ import type {
   Namespace,
   Alert,
 } from "../core/types.js";
-import { canonicalStringify } from "../core/chain.js";
-import { computeEventHash } from "../core/chain.js";
+import { computeStringHash } from "../core/chain.js";
 
 /**
  * Create a CloudStore backed by Cloudflare D1.
@@ -67,16 +66,17 @@ class D1EventStore implements EventStore {
     };
   }
 
-  async insertEvents(namespaceId: string, events: AuditEvent[], receivedAt: string): Promise<number> {
-    if (events.length === 0) return 0;
+  async insertEventsRaw(namespaceId: string, rawStrings: string[], parsedEvents: AuditEvent[], receivedAt: string): Promise<number> {
+    if (rawStrings.length === 0) return 0;
 
     // Build batch of INSERT statements + namespace update.
     // D1 batch() is the ONLY atomic primitive (no BEGIN TRANSACTION).
     const stmts: D1PreparedStatement[] = [];
 
-    for (const event of events) {
-      const payload = canonicalStringify(event);
-      const hash = computeEventHash(event);
+    for (let i = 0; i < rawStrings.length; i++) {
+      const raw = rawStrings[i];    // Original canonical JSON from SDK (used as payload)
+      const event = parsedEvents[i]; // Parsed for metadata extraction
+      const hash = computeStringHash(raw);  // Hash the RAW string, not re-serialized
       const traceId = (event.data as Record<string, unknown>)?.trace_id as string | undefined;
 
       stmts.push(
@@ -96,7 +96,7 @@ class D1EventStore implements EventStore {
             event.adapter ? JSON.stringify(event.adapter) : null,
             hash,
             event.prev_hash,
-            payload,
+            raw,  // Store original SDK canonical JSON, not re-serialized
             receivedAt,
           )
       );
@@ -105,9 +105,9 @@ class D1EventStore implements EventStore {
     // Update namespace chain head + event count with optimistic concurrency.
     // WHERE clause includes expected previous head — if another concurrent
     // request updated it first, this UPDATE affects 0 rows and we detect it.
-    const lastEvent = events[events.length - 1];
-    const lastHash = computeEventHash(lastEvent);
-    const expectedPrevSeq = events[0].seq === 0 ? null : events[0].seq - 1;
+    const lastEvent = parsedEvents[parsedEvents.length - 1];
+    const lastHash = computeStringHash(rawStrings[rawStrings.length - 1]);
+    const expectedPrevSeq = parsedEvents[0].seq === 0 ? null : parsedEvents[0].seq - 1;
 
     stmts.push(
       this.db
@@ -127,7 +127,7 @@ class D1EventStore implements EventStore {
           lastHash,
           lastEvent.timestamp,
           lastEvent.timestamp,
-          events.length,
+          rawStrings.length,
           namespaceId,
           ...(expectedPrevSeq === null ? [] : [expectedPrevSeq]),
         )
@@ -142,7 +142,7 @@ class D1EventStore implements EventStore {
       throw new Error("Concurrent chain head modification detected. Retry.");
     }
 
-    return events.length;
+    return rawStrings.length;
   }
 
   async getEvents(

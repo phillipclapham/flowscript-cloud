@@ -8,7 +8,8 @@
 import { Hono } from "hono";
 import type { AuthVariables } from "../middleware/auth.js";
 import type { EventIngestionRequest } from "../core/types.js";
-import { verifyBatch } from "../core/chain.js";
+import { verifyBatchFromStrings } from "../core/chain.js";
+import type { AuditEvent } from "../core/types.js";
 import { canPerform, canAccessNamespace } from "../core/rbac.js";
 import { createWitness, createGenesisWitness } from "../core/witness.js";
 import { GENESIS_HASH } from "../core/types.js";
@@ -49,10 +50,24 @@ eventRoutes.post("/events", async (c) => {
     return c.json({ error: `Batch too large. Maximum ${MAX_BATCH_SIZE} events per request.` }, 413);
   }
 
-  // Runtime validation of event fields (TypeScript types aren't runtime checks).
-  // Malformed events must get clear 400 errors, not confusing chain_break errors.
-  for (let i = 0; i < body.events.length; i++) {
-    const e = body.events[i];
+  // Events are canonical JSON strings from the SDK.
+  // Parse each for metadata + validation, keep raw strings for hashing.
+  const eventStrings = body.events;
+  const parsedEvents: AuditEvent[] = [];
+
+  for (let i = 0; i < eventStrings.length; i++) {
+    if (typeof eventStrings[i] !== "string") {
+      return c.json({ error: `Event ${i}: must be a canonical JSON string, not ${typeof eventStrings[i]}` }, 400);
+    }
+
+    let e: AuditEvent;
+    try {
+      e = JSON.parse(eventStrings[i]);
+    } catch {
+      return c.json({ error: `Event ${i}: invalid JSON` }, 400);
+    }
+
+    // Runtime validation of parsed event fields
     if (e.v !== 1) {
       return c.json({ error: `Event ${i}: unsupported schema version ${e.v}. Expected: 1` }, 400);
     }
@@ -71,6 +86,8 @@ eventRoutes.post("/events", async (c) => {
     if (typeof e.data !== "object" || e.data === null) {
       return c.json({ error: `Event ${i}: data must be a non-null object` }, 400);
     }
+
+    parsedEvents.push(e);
   }
 
   // Parse namespace "owner/agent" format
@@ -127,8 +144,8 @@ eventRoutes.post("/events", async (c) => {
   // Get existing chain head
   const existingHead = await store.events.getChainHead(ns.id);
 
-  // Verify the event batch
-  const verifyResult = verifyBatch(existingHead, body.events);
+  // Verify the event batch — hash raw strings, check parsed prev_hash/seq
+  const verifyResult = verifyBatchFromStrings(existingHead, eventStrings, parsedEvents);
 
   if (!verifyResult.valid) {
     // Chain break — create alert and return error
@@ -173,16 +190,18 @@ eventRoutes.post("/events", async (c) => {
     });
   }
 
-  // Store new events
-  const newEvents = body.events.slice(body.events.length - verifyResult.accepted);
+  // Store new events (pass raw strings as payloads — preserves exact SDK bytes)
+  const newStartIdx = eventStrings.length - verifyResult.accepted;
+  const newEventStrings = eventStrings.slice(newStartIdx);
+  const newParsedEvents = parsedEvents.slice(newStartIdx);
   const receivedAt = new Date().toISOString();
-  await store.events.insertEvents(ns.id, newEvents, receivedAt);
+  await store.events.insertEventsRaw(ns.id, newEventStrings, newParsedEvents, receivedAt);
 
   // Generate witness attestation
   const totalEvents = ns.eventCount + verifyResult.accepted;
   const isGenesisChain = existingHead === null;
   const witness = isGenesisChain
-    ? createGenesisWitness(ns.id, verifyResult.newHead!, totalEvents, newEvents[0].timestamp)
+    ? createGenesisWitness(ns.id, verifyResult.newHead!, totalEvents, newParsedEvents[0].timestamp)
     : createWitness(
         ns.id,
         verifyResult.newHead!,
@@ -255,9 +274,22 @@ eventRoutes.post("/namespaces/:owner/:agent/backfill", async (c) => {
     );
   }
 
-  // Verify the complete chain
-  const events = body.events as import("../core/types.js").AuditEvent[];
-  const verifyResult = verifyBatch(null, events);
+  // Backfill events are also canonical JSON strings
+  const backfillStrings = body.events as string[];
+  const backfillParsed: AuditEvent[] = [];
+  for (let i = 0; i < backfillStrings.length; i++) {
+    if (typeof backfillStrings[i] !== "string") {
+      return c.json({ error: `Event ${i}: must be a canonical JSON string` }, 400);
+    }
+    try {
+      backfillParsed.push(JSON.parse(backfillStrings[i]));
+    } catch {
+      return c.json({ error: `Event ${i}: invalid JSON` }, 400);
+    }
+  }
+
+  // Verify the complete chain — hash raw strings for cross-language compatibility
+  const verifyResult = verifyBatchFromStrings(null, backfillStrings, backfillParsed);
 
   if (!verifyResult.valid) {
     return c.json(
@@ -269,23 +301,23 @@ eventRoutes.post("/namespaces/:owner/:agent/backfill", async (c) => {
     );
   }
 
-  // Store all events
+  // Store all events (raw strings as payloads)
   const receivedAt = new Date().toISOString();
-  await store.events.insertEvents(ns.id, events, receivedAt);
+  await store.events.insertEventsRaw(ns.id, backfillStrings, backfillParsed, receivedAt);
 
   // Generate witness covering entire history
-  const witness = createGenesisWitness(ns.id, verifyResult.newHead!, events.length, events[0].timestamp);
+  const witness = createGenesisWitness(ns.id, verifyResult.newHead!, backfillParsed.length, backfillParsed[0].timestamp);
   await store.witnesses.createWitness(witness);
 
   return c.json({
-    accepted: events.length,
+    accepted: backfillParsed.length,
     chain_valid: true,
     witness: {
       id: witness.id,
       chain_head_seq: witness.chainHead.seq,
       chain_head_hash: witness.chainHead.hash,
       chain_tail_hash: GENESIS_HASH,
-      total_events: events.length,
+      total_events: backfillParsed.length,
       witnessed_at: witness.witnessedAt,
     },
   });

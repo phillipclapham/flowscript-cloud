@@ -239,10 +239,17 @@ export interface Alert {
 // API Request/Response Types
 // =============================================================================
 
-/** POST /v1/events request body. */
+/** POST /v1/events request body.
+ *
+ * Events are transmitted as canonical JSON STRINGS — the exact bytes the SDK
+ * hashed when building the chain. Cloud hashes these strings directly (no
+ * JSON.parse roundtrip for hashing) and JSON.parses them separately for
+ * metadata extraction. This eliminates cross-language serialization divergence
+ * (Python 1.0 vs JS 1 for whole-number floats) as an entire bug class.
+ */
 export interface EventIngestionRequest {
   namespace: string;  // "owner/agent" format
-  events: AuditEvent[];
+  events: string[];   // Array of canonical JSON lines (SDK-generated)
 }
 
 /** POST /v1/events success response. */
@@ -284,7 +291,8 @@ export interface OrgSignupResponse {
 
 export interface EventStore {
   getChainHead(namespaceId: string): Promise<ChainHead | null>;
-  insertEvents(namespaceId: string, events: AuditEvent[], receivedAt: string): Promise<number>;
+  /** Store events from raw canonical JSON strings + parsed metadata. */
+  insertEventsRaw(namespaceId: string, rawStrings: string[], parsedEvents: AuditEvent[], receivedAt: string): Promise<number>;
   getEvents(namespaceId: string, opts: EventQueryOpts): Promise<{ events: StoredEvent[]; total: number }>;
 }
 

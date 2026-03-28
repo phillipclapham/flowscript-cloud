@@ -86,8 +86,23 @@ export function canonicalStringify(value: unknown): string {
  */
 export function computeEventHash(event: AuditEvent): string {
   const jsonLine = canonicalStringify(event);
+  return computeStringHash(jsonLine);
+}
+
+/**
+ * Compute SHA-256 hash of a raw canonical JSON string.
+ *
+ * This is the PRODUCTION hash function for Cloud. It hashes the raw bytes
+ * as received from the SDK, without any JSON.parse → JSON.stringify roundtrip.
+ * This eliminates cross-language serialization divergence (Python 1.0 vs JS 1
+ * for whole-number floats) as an entire bug class.
+ *
+ * Used by verifyBatchFromStrings() for real event ingestion.
+ * computeEventHash() is for tests only (where we construct events in JS).
+ */
+export function computeStringHash(canonicalJson: string): string {
   const { createHash } = require("node:crypto") as typeof import("node:crypto");
-  const hash = createHash("sha256").update(jsonLine, "utf-8").digest("hex");
+  const hash = createHash("sha256").update(canonicalJson, "utf-8").digest("hex");
   return HASH_PREFIX + hash;
 }
 
@@ -96,28 +111,43 @@ export function computeEventHash(event: AuditEvent): string {
 // =============================================================================
 
 /**
- * Verify a batch of events against an existing chain head.
+ * Verify a batch of canonical JSON strings against an existing chain head.
  *
- * @param existingHead - The current chain head for this namespace (null if empty namespace).
- * @param events - The batch of events to verify.
- * @returns BatchVerifyResult with verification outcome.
+ * PRODUCTION PATH: Hashes raw strings directly (no JSON.parse roundtrip).
+ * Eliminates cross-language float serialization divergence permanently.
  *
- * Verification rules:
- * 1. First event's prev_hash must match existingHead.hash (or GENESIS if null)
- * 2. Each event's seq must be exactly prev_seq + 1 (no gaps, no regression)
- * 3. Each event's recomputed hash must chain correctly to the next event's prev_hash
- * 4. GENESIS events on non-empty namespaces are rejected (duplicate_genesis)
- * 5. Replay of already-ingested events (seq ≤ head.seq) is accepted gracefully
+ * @param existingHead - The current chain head (null if empty namespace).
+ * @param eventStrings - Canonical JSON strings as received from SDK.
+ * @param parsedEvents - Pre-parsed events (for seq/prev_hash/timestamp extraction).
  */
+export function verifyBatchFromStrings(
+  existingHead: ChainHead | null,
+  eventStrings: string[],
+  parsedEvents: AuditEvent[],
+): BatchVerifyResult {
+  return verifyBatchCore(existingHead, parsedEvents, (i) => computeStringHash(eventStrings[i]));
+}
+
 /**
- * Verify a batch of events against an existing chain head.
- *
- * Uses sync computeEventHash (node:crypto via nodejs_compat).
- * Single implementation — no dead async wrapper.
+ * Verify a batch of parsed AuditEvent objects.
+ * Used in TESTS where events are constructed in JS (no cross-language concern).
+ * Hashes via canonicalStringify → SHA-256.
  */
 export function verifyBatch(
   existingHead: ChainHead | null,
   events: AuditEvent[],
+): BatchVerifyResult {
+  return verifyBatchCore(existingHead, events, (i) => computeEventHash(events[i]));
+}
+
+/**
+ * Core chain verification — parameterized on hash computation.
+ * @param hashAt - Returns hash of event at index i.
+ */
+function verifyBatchCore(
+  existingHead: ChainHead | null,
+  events: AuditEvent[],
+  hashAt: (index: number) => string,
 ): BatchVerifyResult {
   if (events.length === 0) {
     return { valid: true, accepted: 0, newHead: existingHead };
@@ -286,15 +316,10 @@ export function verifyBatch(
       };
     }
 
-    // Compute this event's hash for the next iteration's prev_hash check
-    const computedHash = computeEventHash(event);
-
-    // For hash_mismatch detection: if this is a standalone event (not followed
-    // by another that references it), we can't detect payload tampering via
-    // chain alone. But we CAN verify that the event's canonical JSON produces
-    // a valid hash. We store the computed hash as the chain head.
-    // The tamper detection comes when the NEXT batch arrives and its first
-    // event's prev_hash must match our stored hash of THIS event.
+    // Compute this event's hash for chain continuity.
+    // In production (verifyBatchFromStrings), this hashes the raw SDK string.
+    // In tests (verifyBatch), this hashes via canonicalStringify.
+    const computedHash = hashAt(i);
 
     prevHash = computedHash;
     lastValidIdx = i;
