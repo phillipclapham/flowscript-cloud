@@ -1,0 +1,24 @@
+{
+  "name": "flowscript-cloud",
+  "version": "0.1.0",
+  "description": "Independent cryptographic witnessing of AI agent reasoning chains",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "wrangler d1 execute flowscript-cloud-db --local --file=src/db/schema.sql"
+  },
+  "dependencies": {
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260301.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0",
+    "wrangler": "^4.0.0"
+  },
+  "license": "SEE LICENSE IN LICENSE"
+}

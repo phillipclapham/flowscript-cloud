@@ -1,0 +1,16 @@
+name = "flowscript-cloud"
+main = "src/worker.ts"
+compatibility_date = "2026-03-28"
+
+[vars]
+ENVIRONMENT = "development"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "flowscript-cloud-db"
+database_id = "local"  # placeholder — set real ID after wrangler d1 create
+
+# KV for API key cache (sub-ms lookups)
+# [[kv_namespaces]]
+# binding = "KV"
+# id = "..."  # set after wrangler kv namespace create
