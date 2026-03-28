@@ -1,15 +1,21 @@
 name = "flowscript-cloud"
+account_id = "1354e07b4222bfe8eb9d7f1b4722216c"
 main = "src/worker.ts"
 compatibility_date = "2026-03-28"
 compatibility_flags = ["nodejs_compat"]
 
+workers_dev = true
+routes = [
+  { pattern = "api.flowscript.org", custom_domain = true }
+]
+
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "flowscript-cloud-db"
-database_id = "local"  # placeholder — set real ID after wrangler d1 create
+database_id = "be5dfece-3242-483e-93d6-bc393167e0f5"
 
 # KV for API key cache (sub-ms lookups)
 # [[kv_namespaces]]
