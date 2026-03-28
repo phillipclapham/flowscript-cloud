@@ -229,8 +229,8 @@ class D1KeyStore implements KeyStore {
   async createKey(record: ApiKeyRecord): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO api_keys (id, org_id, role, scope_type, scope_id, label, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO api_keys (id, org_id, role, scope_type, scope_id, label, created_by, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -239,17 +239,19 @@ class D1KeyStore implements KeyStore {
         record.scopeType,
         record.scopeId,
         record.label,
+        record.createdBy,
         record.createdAt,
         record.expiresAt,
       )
       .run();
   }
 
-  async revokeKey(keyId: string, revokedAt: string): Promise<void> {
-    await this.db
-      .prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ?")
-      .bind(revokedAt, keyId)
+  async revokeKey(keyId: string, orgId: string, revokedAt: string): Promise<boolean> {
+    const result = await this.db
+      .prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND org_id = ?")
+      .bind(revokedAt, keyId, orgId)
       .run();
+    return (result.meta?.changes ?? 0) > 0;
   }
 
   async listKeys(orgId: string): Promise<ApiKeyRecord[]> {
@@ -275,6 +277,7 @@ class D1KeyStore implements KeyStore {
       scopeType: row.scope_type as ApiKeyRecord["scopeType"],
       scopeId: row.scope_id as string,
       label: row.label as string | null,
+      createdBy: row.created_by as string | null,
       createdAt: row.created_at as string,
       lastUsed: row.last_used as string | null,
       revokedAt: row.revoked_at as string | null,
@@ -390,6 +393,15 @@ class D1OrgStore implements OrgStore {
       .bind(id)
       .first();
     return row ? this.rowToOrg(row) : null;
+  }
+
+  async countRecentOrgs(minutesAgo: number): Promise<number> {
+    const cutoff = new Date(Date.now() - minutesAgo * 60 * 1000).toISOString();
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as cnt FROM organizations WHERE created_at > ?")
+      .bind(cutoff)
+      .first<{ cnt: number }>();
+    return row?.cnt ?? 0;
   }
 
   private rowToOrg(row: Record<string, unknown>): Organization {

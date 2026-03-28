@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   scope_type  TEXT NOT NULL,
   scope_id    TEXT NOT NULL,
   label       TEXT,
+  created_by  TEXT,                          -- key_id of the key that created this one (audit trail)
   created_at  TEXT NOT NULL,
   last_used   TEXT,
   revoked_at  TEXT,

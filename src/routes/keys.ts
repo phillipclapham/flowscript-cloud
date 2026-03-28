@@ -66,6 +66,7 @@ keyRoutes.post("/auth/keys", async (c) => {
     scopeType: body.scope_type as ScopeType,
     scopeId: body.scope_id,
     label: body.label ?? null,
+    createdBy: auth.keyId,  // audit trail: which key created this one
     createdAt: now,
     lastUsed: null,
     revokedAt: null,
@@ -101,7 +102,10 @@ keyRoutes.delete("/auth/keys/:keyId", async (c) => {
   }
 
   const keyId = c.req.param("keyId");
-  await store.keys.revokeKey(keyId, new Date().toISOString());
+  const revoked = await store.keys.revokeKey(keyId, auth.orgId, new Date().toISOString());
+  if (!revoked) {
+    return c.json({ error: "Key not found" }, 404);
+  }
   return c.json({ revoked: true, revoked_at: new Date().toISOString() });
 });
 

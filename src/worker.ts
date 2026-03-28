@@ -59,6 +59,14 @@ app.post("/v1/orgs", async (c) => {
   if (existing) {
     return c.json({ error: "Organization slug already taken" }, 409);
   }
+
+  // Rate limiting: max 10 org signups per hour (global).
+  // Edge-level CF Rate Limiting rules should also be configured in production
+  // for per-IP throttling, but this is the application-level safety net.
+  const recentCount = await store.orgs.countRecentOrgs(60);
+  if (recentCount >= 10) {
+    return c.json({ error: "Too many signups. Please try again later." }, 429);
+  }
   const now = new Date().toISOString();
   const org = {
     id: crypto.randomUUID(),
@@ -78,6 +86,7 @@ app.post("/v1/orgs", async (c) => {
     scopeType: "org",
     scopeId: org.id,
     label: "Initial admin key",
+    createdBy: null,  // bootstrap key — no creating key
     createdAt: now,
     lastUsed: null,
     revokedAt: null,

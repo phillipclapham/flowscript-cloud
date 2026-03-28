@@ -80,34 +80,15 @@ export function canonicalStringify(value: unknown): string {
  *
  * Returns "sha256:" + hex digest, matching the Python SDK format.
  *
- * This function works in both Node.js (via crypto module) and Cloudflare Workers
- * (via Web Crypto API). We use the synchronous Node.js crypto for simplicity
- * in tests, with an async variant for Workers if needed.
- */
-/**
- * Compute event hash — sync version for Node.js tests.
- * Uses createHash from node:crypto (imported at module level).
+ * RUNTIME REQUIREMENT: nodejs_compat flag MUST be enabled in wrangler.toml.
+ * This is a hard dependency — without it, node:crypto is unavailable in Workers
+ * and all chain verification fails. The flag is set in the project's wrangler.toml.
  */
 export function computeEventHash(event: AuditEvent): string {
   const jsonLine = canonicalStringify(event);
-  // Node.js sync path — used in tests and can be used in Workers with nodejs_compat
   const { createHash } = require("node:crypto") as typeof import("node:crypto");
   const hash = createHash("sha256").update(jsonLine, "utf-8").digest("hex");
   return HASH_PREFIX + hash;
-}
-
-/**
- * Compute event hash — async version using Web Crypto API.
- * Works in CF Workers (no node:crypto dependency) AND Node.js.
- * This is the production code path.
- */
-export async function computeEventHashAsync(event: AuditEvent): Promise<string> {
-  const jsonLine = canonicalStringify(event);
-  const encoded = new TextEncoder().encode(jsonLine);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-  return HASH_PREFIX + hashHex;
 }
 
 // =============================================================================
@@ -129,34 +110,14 @@ export async function computeEventHashAsync(event: AuditEvent): Promise<string> 
  * 5. Replay of already-ingested events (seq ≤ head.seq) is accepted gracefully
  */
 /**
- * Sync verifyBatch — uses sync computeEventHash (Node.js only, for tests).
+ * Verify a batch of events against an existing chain head.
+ *
+ * Uses sync computeEventHash (node:crypto via nodejs_compat).
+ * Single implementation — no dead async wrapper.
  */
-export function verifyBatchSync(
+export function verifyBatch(
   existingHead: ChainHead | null,
   events: AuditEvent[],
-): BatchVerifyResult {
-  return verifyBatchImpl(existingHead, events, computeEventHash);
-}
-
-/**
- * Async verifyBatch — uses Web Crypto (works in CF Workers + Node.js).
- * This is the production code path.
- */
-export async function verifyBatch(
-  existingHead: ChainHead | null,
-  events: AuditEvent[],
-): Promise<BatchVerifyResult> {
-  return verifyBatchImpl(existingHead, events, computeEventHash);
-}
-
-/**
- * Internal implementation — parameterized on hash function.
- * Both sync and async versions delegate here.
- */
-function verifyBatchImpl(
-  existingHead: ChainHead | null,
-  events: AuditEvent[],
-  hashFn: (event: AuditEvent) => string,
 ): BatchVerifyResult {
   if (events.length === 0) {
     return { valid: true, accepted: 0, newHead: existingHead };
@@ -326,7 +287,7 @@ function verifyBatchImpl(
     }
 
     // Compute this event's hash for the next iteration's prev_hash check
-    const computedHash = hashFn(event);
+    const computedHash = computeEventHash(event);
 
     // For hash_mismatch detection: if this is a standalone event (not followed
     // by another that references it), we can't detect payload tampering via

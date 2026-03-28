@@ -168,6 +168,7 @@ export interface ApiKeyRecord {
   scopeType: ScopeType;
   scopeId: string;
   label: string | null;
+  createdBy: string | null;  // key_id that created this key (audit trail)
   createdAt: string;
   lastUsed: string | null;
   revokedAt: string | null;
@@ -308,7 +309,7 @@ export interface StoredEvent extends AuditEvent {
 export interface KeyStore {
   getKey(keyHash: string): Promise<ApiKeyRecord | null>;
   createKey(record: ApiKeyRecord): Promise<void>;
-  revokeKey(keyId: string, revokedAt: string): Promise<void>;
+  revokeKey(keyId: string, orgId: string, revokedAt: string): Promise<boolean>;
   listKeys(orgId: string): Promise<ApiKeyRecord[]>;
   touchKey(keyId: string, lastUsed: string): Promise<void>;
 }
@@ -322,6 +323,7 @@ export interface OrgStore {
   createOrg(org: Organization): Promise<void>;
   getOrgBySlug(slug: string): Promise<Organization | null>;
   getOrgById(id: string): Promise<Organization | null>;
+  countRecentOrgs(minutesAgo: number): Promise<number>;
 }
 
 export interface NamespaceStore {
