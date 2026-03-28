@@ -39,7 +39,9 @@ export const authMiddleware = createMiddleware<{ Variables: AuthVariables }>(
     auth.orgSlug = org.slug;
 
     // Touch key last_used (fire-and-forget — don't block the request)
-    store.keys.touchKey(auth.keyId, new Date().toISOString()).catch(() => {});
+    store.keys.touchKey(auth.keyId, new Date().toISOString()).catch((e) => {
+      console.error("touchKey failed:", e);
+    });
 
     c.set("auth", auth);
     await next();

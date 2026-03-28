@@ -44,8 +44,6 @@ orgRoutes.post("/orgs", async (c) => {
   }
 
   // Create org
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require("node:crypto");
   const now = new Date().toISOString();
   const org: Organization = {
     id: crypto.randomUUID(),

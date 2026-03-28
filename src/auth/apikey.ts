@@ -14,21 +14,32 @@ import { KEY_PREFIX } from "../core/types.js";
  * Returns { rawKey, keyHash } — rawKey is shown once, keyHash is stored.
  */
 export function generateApiKey(): { rawKey: string; keyHash: string } {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require("node:crypto");
-  const randomBytes = crypto.randomBytes(32).toString("hex");
-  const rawKey = KEY_PREFIX + randomBytes;
+  // crypto.getRandomValues() is available in CF Workers and Node.js
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const randomHex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const rawKey = KEY_PREFIX + randomHex;
   const keyHash = hashApiKey(rawKey);
   return { rawKey, keyHash };
 }
 
 /**
  * Hash an API key for storage/lookup. SHA-256 of the raw key string.
+ * Sync version using node:crypto (for route handlers that need immediate results).
  */
 export function hashApiKey(rawKey: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require("node:crypto");
-  return crypto.createHash("sha256").update(rawKey, "utf-8").digest("hex");
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+  return createHash("sha256").update(rawKey, "utf-8").digest("hex");
+}
+
+/**
+ * Async hash for CF Workers (Web Crypto API).
+ */
+export async function hashApiKeyAsync(rawKey: string): Promise<string> {
+  const encoded = new TextEncoder().encode(rawKey);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**

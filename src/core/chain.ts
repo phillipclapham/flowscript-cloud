@@ -56,8 +56,11 @@ export function canonicalStringify(value: unknown): string {
     return "[" + items.join(",") + "]";
   }
   if (typeof value === "object") {
-    // Sort keys lexicographically — this is what makes it canonical
-    const keys = Object.keys(value as Record<string, unknown>).sort();
+    // Sort keys lexicographically — this is what makes it canonical.
+    // Filter out undefined values — matches JSON.stringify behavior and Python
+    // (Python dicts can't have undefined; JS objects can).
+    const raw = value as Record<string, unknown>;
+    const keys = Object.keys(raw).filter((k) => raw[k] !== undefined).sort();
     const pairs = keys.map((key) => {
       const v = (value as Record<string, unknown>)[key];
       return JSON.stringify(key) + ":" + canonicalStringify(v);
@@ -81,41 +84,30 @@ export function canonicalStringify(value: unknown): string {
  * (via Web Crypto API). We use the synchronous Node.js crypto for simplicity
  * in tests, with an async variant for Workers if needed.
  */
+/**
+ * Compute event hash — sync version for Node.js tests.
+ * Uses createHash from node:crypto (imported at module level).
+ */
 export function computeEventHash(event: AuditEvent): string {
   const jsonLine = canonicalStringify(event);
-  // Use Node.js crypto module (sync) — available in Node.js and Workers runtime.
-  // We import dynamically to avoid bundler issues in Workers where node:crypto
-  // is provided by the runtime but not resolvable at build time.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const nodeCrypto = require("node:crypto");
-  const hash = nodeCrypto.createHash("sha256").update(jsonLine, "utf-8").digest("hex");
+  // Node.js sync path — used in tests and can be used in Workers with nodejs_compat
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+  const hash = createHash("sha256").update(jsonLine, "utf-8").digest("hex");
   return HASH_PREFIX + hash;
 }
 
 /**
- * Async hash computation for Cloudflare Workers (Web Crypto API).
+ * Compute event hash — async version using Web Crypto API.
+ * Works in CF Workers (no node:crypto dependency) AND Node.js.
+ * This is the production code path.
  */
 export async function computeEventHashAsync(event: AuditEvent): Promise<string> {
   const jsonLine = canonicalStringify(event);
   const encoded = new TextEncoder().encode(jsonLine);
-
-  // Try Web Crypto first (CF Workers)
-  try {
-    const subtle = (globalThis as unknown as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
-    if (subtle) {
-      const hashBuffer = await subtle.digest("SHA-256", encoded);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-      return HASH_PREFIX + hashHex;
-    }
-  } catch {
-    // Fall through to Node.js
-  }
-
-  // Node.js fallback
-  const { createHash } = await import("node:crypto");
-  const hash = createHash("sha256").update(jsonLine, "utf-8").digest("hex");
-  return HASH_PREFIX + hash;
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  return HASH_PREFIX + hashHex;
 }
 
 // =============================================================================
@@ -136,9 +128,35 @@ export async function computeEventHashAsync(event: AuditEvent): Promise<string> 
  * 4. GENESIS events on non-empty namespaces are rejected (duplicate_genesis)
  * 5. Replay of already-ingested events (seq ≤ head.seq) is accepted gracefully
  */
-export function verifyBatch(
+/**
+ * Sync verifyBatch — uses sync computeEventHash (Node.js only, for tests).
+ */
+export function verifyBatchSync(
   existingHead: ChainHead | null,
   events: AuditEvent[],
+): BatchVerifyResult {
+  return verifyBatchImpl(existingHead, events, computeEventHash);
+}
+
+/**
+ * Async verifyBatch — uses Web Crypto (works in CF Workers + Node.js).
+ * This is the production code path.
+ */
+export async function verifyBatch(
+  existingHead: ChainHead | null,
+  events: AuditEvent[],
+): Promise<BatchVerifyResult> {
+  return verifyBatchImpl(existingHead, events, computeEventHash);
+}
+
+/**
+ * Internal implementation — parameterized on hash function.
+ * Both sync and async versions delegate here.
+ */
+function verifyBatchImpl(
+  existingHead: ChainHead | null,
+  events: AuditEvent[],
+  hashFn: (event: AuditEvent) => string,
 ): BatchVerifyResult {
   if (events.length === 0) {
     return { valid: true, accepted: 0, newHead: existingHead };
@@ -308,7 +326,7 @@ export function verifyBatch(
     }
 
     // Compute this event's hash for the next iteration's prev_hash check
-    const computedHash = computeEventHash(event);
+    const computedHash = hashFn(event);
 
     // For hash_mismatch detection: if this is a standalone event (not followed
     // by another that references it), we can't detect payload tampering via

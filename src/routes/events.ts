@@ -43,6 +43,20 @@ eventRoutes.post("/events", async (c) => {
     return c.json({ error: "Empty events array" }, 400);
   }
 
+  // Enforce batch size limit (D1 batch limit + Worker CPU budget)
+  const MAX_BATCH_SIZE = 1000;
+  if (body.events.length > MAX_BATCH_SIZE) {
+    return c.json({ error: `Batch too large. Maximum ${MAX_BATCH_SIZE} events per request.` }, 413);
+  }
+
+  // Validate schema version on all events
+  const invalidVersion = body.events.find((e) => e.v !== 1);
+  if (invalidVersion) {
+    return c.json({
+      error: `Unsupported event schema version: ${invalidVersion.v}. Expected: 1`,
+    }, 400);
+  }
+
   // Parse namespace "owner/agent" format
   const nsParts = body.namespace.split("/");
   if (nsParts.length !== 2 || !nsParts[0] || !nsParts[1]) {
@@ -50,12 +64,24 @@ eventRoutes.post("/events", async (c) => {
   }
   const [, agentName] = nsParts;
 
-  // Resolve or create namespace
+  // Resolve namespace (check scope BEFORE auto-creation to prevent
+  // namespace enumeration/exhaustion via unauthorized keys)
   let ns = await store.namespaces.getNamespace(auth.orgId, agentName);
-  if (!ns) {
-    // Auto-create namespace on first event ingestion
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const crypto = require("node:crypto");
+
+  if (ns) {
+    // Existing namespace — verify scope access
+    if (!canAccessNamespace(auth.scopeType, auth.scopeId, ns.orgId, ns.teamId, ns.id)) {
+      return c.json({ error: "Namespace not found" }, 404);
+    }
+  } else {
+    // New namespace — verify the key has org-level or broad scope before auto-creating.
+    // Namespace-scoped keys cannot auto-create (they reference a specific namespace ID
+    // that doesn't exist yet). Only org-scoped and team-scoped keys can auto-create.
+    if (auth.scopeType === "namespace") {
+      return c.json({ error: "Namespace not found" }, 404);
+    }
+
+    const crypto = await import("node:crypto");
     const nsId = crypto.randomUUID();
     ns = {
       id: nsId,
@@ -70,22 +96,14 @@ eventRoutes.post("/events", async (c) => {
     await store.namespaces.createNamespace(ns);
   }
 
-  // RBAC: verify key scope grants access to this namespace
-  if (!canAccessNamespace(auth.scopeType, auth.scopeId, ns.orgId, ns.teamId, ns.id)) {
-    // Return 404 (not 403) to avoid namespace enumeration
-    return c.json({ error: "Namespace not found" }, 404);
-  }
-
   // Get existing chain head
   const existingHead = await store.events.getChainHead(ns.id);
 
   // Verify the event batch
-  const verifyResult = verifyBatch(existingHead, body.events);
+  const verifyResult = await verifyBatch(existingHead, body.events);
 
   if (!verifyResult.valid) {
     // Chain break — create alert and return error
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const crypto = require("node:crypto");
     await store.alerts.createAlert({
       id: crypto.randomUUID(),
       orgId: auth.orgId,
@@ -132,7 +150,7 @@ eventRoutes.post("/events", async (c) => {
   const totalEvents = ns.eventCount + verifyResult.accepted;
   const isGenesisChain = existingHead === null;
   const witness = isGenesisChain
-    ? createGenesisWitness(ns.id, verifyResult.newHead!, totalEvents)
+    ? createGenesisWitness(ns.id, verifyResult.newHead!, totalEvents, newEvents[0].timestamp)
     : createWitness(
         ns.id,
         verifyResult.newHead!,
@@ -174,10 +192,13 @@ eventRoutes.post("/namespaces/:owner/:agent/backfill", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  // Resolve namespace
+  // Resolve namespace + scope check
   const ns = await store.namespaces.getNamespace(auth.orgId, agentName);
   if (!ns) {
     return c.json({ error: "Namespace not found. Send events via POST /v1/events first." }, 404);
+  }
+  if (!canAccessNamespace(auth.scopeType, auth.scopeId, ns.orgId, ns.teamId, ns.id)) {
+    return c.json({ error: "Namespace not found" }, 404);
   }
 
   // Backfill only allowed on empty namespaces
@@ -194,7 +215,7 @@ eventRoutes.post("/namespaces/:owner/:agent/backfill", async (c) => {
 
   // Verify the complete chain
   const events = body.events as import("../core/types.js").AuditEvent[];
-  const verifyResult = verifyBatch(null, events);
+  const verifyResult = await verifyBatch(null, events);
 
   if (!verifyResult.valid) {
     return c.json(
@@ -211,7 +232,7 @@ eventRoutes.post("/namespaces/:owner/:agent/backfill", async (c) => {
   await store.events.insertEvents(ns.id, events, receivedAt);
 
   // Generate witness covering entire history
-  const witness = createGenesisWitness(ns.id, verifyResult.newHead!, events.length);
+  const witness = createGenesisWitness(ns.id, verifyResult.newHead!, events.length, events[0].timestamp);
   await store.witnesses.createWitness(witness);
 
   return c.json({

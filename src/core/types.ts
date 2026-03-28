@@ -125,7 +125,7 @@ export interface Witness {
     hash: string;
     timestamp: string;
   };
-  /** Total events covered by this attestation. */
+  /** Total events in the namespace at time of attestation (cumulative). */
   totalEvents: number;
   /** When Cloud generated this attestation. */
   witnessedAt: string;

@@ -102,16 +102,25 @@ class D1EventStore implements EventStore {
       );
     }
 
-    // Update namespace chain head + event count
+    // Update namespace chain head + event count with optimistic concurrency.
+    // WHERE clause includes expected previous head — if another concurrent
+    // request updated it first, this UPDATE affects 0 rows and we detect it.
     const lastEvent = events[events.length - 1];
     const lastHash = computeEventHash(lastEvent);
+    const expectedPrevSeq = events[0].seq === 0 ? null : events[0].seq - 1;
+
     stmts.push(
       this.db
         .prepare(
-          `UPDATE namespaces
-           SET chain_head_seq = ?, chain_head_hash = ?, chain_head_ts = ?,
-               last_event = ?, event_count = event_count + ?
-           WHERE id = ?`
+          expectedPrevSeq === null
+            ? `UPDATE namespaces
+               SET chain_head_seq = ?, chain_head_hash = ?, chain_head_ts = ?,
+                   last_event = ?, event_count = event_count + ?
+               WHERE id = ? AND chain_head_seq IS NULL`
+            : `UPDATE namespaces
+               SET chain_head_seq = ?, chain_head_hash = ?, chain_head_ts = ?,
+                   last_event = ?, event_count = event_count + ?
+               WHERE id = ? AND chain_head_seq = ?`
         )
         .bind(
           lastEvent.seq,
@@ -120,10 +129,19 @@ class D1EventStore implements EventStore {
           lastEvent.timestamp,
           events.length,
           namespaceId,
+          ...(expectedPrevSeq === null ? [] : [expectedPrevSeq]),
         )
     );
 
-    await this.db.batch(stmts);
+    const results = await this.db.batch(stmts);
+
+    // Check optimistic concurrency — last result is the UPDATE
+    const updateResult = results[results.length - 1];
+    if (updateResult && (updateResult as D1Result).meta?.changes === 0) {
+      // Chain head was modified concurrently — caller should retry
+      throw new Error("Concurrent chain head modification detected. Retry.");
+    }
+
     return events.length;
   }
 

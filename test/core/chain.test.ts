@@ -19,7 +19,7 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import type { AuditEvent, ChainHead, BatchVerifyResult } from "../../src/core/types.js";
 import { GENESIS_HASH } from "../../src/core/types.js";
-import { verifyBatch, computeEventHash } from "../../src/core/chain.js";
+import { verifyBatchSync as verifyBatch, computeEventHash } from "../../src/core/chain.js";
 
 // =============================================================================
 // Load Python-generated fixture

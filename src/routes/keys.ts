@@ -43,6 +43,18 @@ keyRoutes.post("/auth/keys", async (c) => {
     return c.json({ error: `Invalid scope_type. Must be one of: ${validScopes.join(", ")}` }, 400);
   }
 
+  // Validate scope_id is within the caller's access.
+  // team_admin cannot create org-scoped keys (privilege escalation).
+  // namespace-scoped callers cannot create broader-scoped keys.
+  if (auth.role === "team_admin") {
+    if (body.scope_type === "org") {
+      return c.json({ error: "team_admin cannot create org-scoped keys" }, 403);
+    }
+    if (body.scope_type === "team" && body.scope_id !== auth.scopeId) {
+      return c.json({ error: "team_admin can only create keys for their own team" }, 403);
+    }
+  }
+
   // Generate key
   const { rawKey, keyHash } = generateApiKey();
   const now = new Date().toISOString();

@@ -16,10 +16,8 @@ import { GENESIS_HASH } from "./types.js";
  * Format: wit_ + random hex (collision-resistant for high-volume ingestion).
  */
 function generateWitnessId(): string {
-  // Use node:crypto for randomness
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require("node:crypto");
-  return "wit_" + crypto.randomBytes(16).toString("hex");
+  // crypto.randomUUID() is available globally in CF Workers and Node.js 19+
+  return "wit_" + crypto.randomUUID().replace(/-/g, "");
 }
 
 /**
@@ -66,13 +64,14 @@ export function createGenesisWitness(
   namespaceId: string,
   newHead: ChainHead,
   totalEvents: number,
+  firstEventTimestamp?: string,
 ): Witness {
   return createWitness(
     namespaceId,
     newHead,
     0,
     GENESIS_HASH,
-    newHead.timestamp, // tail timestamp = first event for genesis chains
+    firstEventTimestamp ?? newHead.timestamp,
     totalEvents,
   );
 }

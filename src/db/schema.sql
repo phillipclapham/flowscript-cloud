@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS events (
   prev_hash     TEXT NOT NULL,
   payload       TEXT NOT NULL,
   received_at   TEXT NOT NULL,
-  UNIQUE(namespace_id, seq, event_ts)
+  UNIQUE(namespace_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_events_ns ON events(namespace_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(namespace_id, event_type);
