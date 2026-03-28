@@ -13,7 +13,7 @@
  * This module uses canonicalStringify() to match that exact serialization.
  */
 
-import type { AuditEvent, ChainHead, BatchVerifyResult, ChainBreak } from "./types.js";
+import type { AuditEvent, ChainHead, BatchVerifyResult } from "./types.js";
 import { GENESIS_HASH, HASH_PREFIX } from "./types.js";
 
 // =============================================================================
@@ -99,17 +99,22 @@ export async function computeEventHashAsync(event: AuditEvent): Promise<string> 
   const jsonLine = canonicalStringify(event);
   const encoded = new TextEncoder().encode(jsonLine);
 
-  // Try Web Crypto first (CF Workers), fall back to Node.js
-  if (globalThis.crypto?.subtle) {
-    const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", encoded);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-    return HASH_PREFIX + hashHex;
+  // Try Web Crypto first (CF Workers)
+  try {
+    const subtle = (globalThis as unknown as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+    if (subtle) {
+      const hashBuffer = await subtle.digest("SHA-256", encoded);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+      return HASH_PREFIX + hashHex;
+    }
+  } catch {
+    // Fall through to Node.js
   }
 
   // Node.js fallback
-  const nodeCrypto = await import("node:crypto");
-  const hash = nodeCrypto.createHash("sha256").update(jsonLine, "utf-8").digest("hex");
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256").update(jsonLine, "utf-8").digest("hex");
   return HASH_PREFIX + hash;
 }
 
@@ -190,7 +195,7 @@ export function verifyBatch(
             type: "duplicate_genesis",
             atSeq: 0,
             message: "GENESIS event received but namespace already has events",
-            expected: existingHead.hash,
+            expected: existingHead!.hash,
             received: GENESIS_HASH,
           },
         };
