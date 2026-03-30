@@ -2,6 +2,21 @@
   "name": "flowscript-cloud",
   "version": "0.1.0",
   "description": "Independent cryptographic witnessing of AI agent reasoning chains",
+  "author": "Phill Clapham <phill@claphamdigital.com> (https://phillipclapham.com)",
+  "homepage": "https://flowscript.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/phillipclapham/flowscript-cloud"
+  },
+  "keywords": [
+    "flowscript",
+    "audit-trail",
+    "cryptographic-witness",
+    "compliance",
+    "ai-agents",
+    "chain-verification",
+    "eu-ai-act"
+  ],
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
